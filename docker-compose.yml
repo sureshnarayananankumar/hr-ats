@@ -1,0 +1,319 @@
+# =====================================================================
+#  HR-ATS  --  Docker Compose (development)
+#
+#  Request flow:  Browser -> Kong (:8000) -> backend -> mysql
+#
+#  SAFETY: `docker compose down` stops the stack and PRESERVES data.
+#          Never use `down -v` routinely -- it destroys the MySQL volume.
+# =====================================================================
+
+name: ${COMPOSE_PROJECT_NAME:-hr-ats}
+
+# ---------------------------------------------------------------------
+#  Networks
+#   edge     - reachable from the Windows host (Kong proxy, frontend)
+#   internal - backend / mysql / redis. `internal: true` means no
+#              container on this network can reach the outside world and
+#              nothing outside Docker can reach them except via Kong.
+# ---------------------------------------------------------------------
+networks:
+  hr-ats-edge:
+    name: hr-ats-edge
+    driver: bridge
+  hr-ats-internal:
+    name: hr-ats-internal
+    driver: bridge
+
+volumes:
+  mysql_data:
+    name: hr_ats_mysql_data
+  redis_data:
+    name: hr_ats_redis_data
+  backend_storage:
+    name: hr_ats_backend_storage
+
+services:
+  # ===================================================================
+  #  MySQL 8.4 LTS
+  #  Published ONLY to 127.0.0.1 so MySQL Workbench can connect but the
+  #  database is never reachable from the local network or internet.
+  # ===================================================================
+  mysql:
+    image: mysql:8.4
+    container_name: hr-ats-mysql
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      # NOTE: --default-authentication-plugin was REMOVED in MySQL 8.4.
+      # Use --authentication-policy instead. caching_sha2_password is
+      # already the 8.4 default; this states it explicitly.
+      - --authentication-policy=caching_sha2_password
+      - --max_connections=200
+      - --innodb_buffer_pool_size=512M
+      # Binary logs off for local dev; enable for PITR in production.
+      - --skip-log-bin
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-hr_ats_db}
+      # These are consumed by docker/mysql/init.sql
+      HR_ATS_APP_USER: ${MYSQL_APP_USER:-hr_ats_app}
+      HR_ATS_APP_PASSWORD: ${MYSQL_APP_PASSWORD:?MYSQL_APP_PASSWORD is required}
+      HR_ATS_MIGRATE_USER: ${MYSQL_MIGRATE_USER:-hr_ats_migrate}
+      HR_ATS_MIGRATE_PASSWORD: ${MYSQL_MIGRATE_PASSWORD:?MYSQL_MIGRATE_PASSWORD is required}
+    ports:
+      # host-bound only -- "127.0.0.1:" prefix is the security control
+      - "127.0.0.1:${MYSQL_HOST_PORT:-3307}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      # Scripts here run ONLY on first initialisation of an empty
+      # volume. They never re-run, so restarts cannot wipe data.
+      # A .sh (not .sql) so passwords come from env, not a committed file.
+      - ./docker/mysql/init.sh:/docker-entrypoint-initdb.d/10-init.sh:ro
+    networks:
+      - hr-ats-internal
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  # ===================================================================
+  #  Redis -- BullMQ queues + rate-limit counters
+  #  No host port published. Internal network only.
+  # ===================================================================
+  redis:
+    image: redis:7.4-alpine
+    container_name: hr-ats-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy noeviction
+    volumes:
+      - redis_data:/data
+    networks:
+      - hr-ats-internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "--no-auth-warning", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ===================================================================
+  #  MailHog -- development SMTP sink. Catches every outbound email.
+  #  Web UI: http://localhost:8025
+  # ===================================================================
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    container_name: hr-ats-mailhog
+    restart: unless-stopped
+    ports:
+      # 8025 = web UI, 1025 = SMTP (published so the API can also be run
+      # directly on Windows during development).
+      - "127.0.0.1:8025:8025"
+      - "127.0.0.1:1025:1025"
+    networks:
+      - hr-ats-internal
+    logging:
+      driver: "json-file"
+      options: { max-size: "5m", max-file: "2" }
+
+  # ===================================================================
+  #  Prisma migration runner -- a ONE-SHOT controlled deployment step.
+  #  Runs under the elevated migrate account, exits, and never runs
+  #  concurrently with app replicas.
+  #    docker compose --profile migrate run --rm migrate
+  # ===================================================================
+  migrate:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: development
+    container_name: hr-ats-migrate
+    profiles: ["migrate"]
+    environment:
+      # Elevated DDL account -- used ONLY here, never by the API.
+      DATABASE_URL: ${MIGRATE_DATABASE_URL:?MIGRATE_DATABASE_URL is required}
+      NODE_ENV: ${NODE_ENV:-development}
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-superadmin@hr-ats.local}
+      SEED_DEFAULT_PASSWORD: ${SEED_DEFAULT_PASSWORD:-}
+    command: ["npx", "prisma", "migrate", "deploy"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - hr-ats-internal
+    restart: "no"
+
+  # ===================================================================
+  #  NestJS backend
+  #  NOT published to the host -- all traffic must traverse Kong.
+  # ===================================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: ${BACKEND_BUILD_TARGET:-development}
+    container_name: hr-ats-backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: 3000
+      API_PREFIX: ${API_PREFIX:-api}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is required}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET is required}
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-900}
+      JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-604800}
+      CSRF_SECRET: ${CSRF_SECRET:?CSRF_SECRET is required}
+      # No ":-" default here on purpose: ${VAR:-x} would substitute "x"
+      # for an intentionally EMPTY value, and empty means "host-only
+      # cookie", which is the stricter setting we want by default.
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      COOKIE_SAMESITE: ${COOKIE_SAMESITE:-lax}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:8000}
+      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-1}
+      GATEWAY_SHARED_SECRET: ${GATEWAY_SHARED_SECRET:?GATEWAY_SHARED_SECRET is required}
+      STORAGE_ROOT: /app/storage
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-10485760}
+      SMTP_HOST: mailhog
+      SMTP_PORT: 1025
+      SMTP_SECURE: "false"
+      MAIL_FROM: ${MAIL_FROM:-HR ATS <no-reply@hr-ats.local>}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+    volumes:
+      # Private document store. Outside any web root, on its own volume.
+      - backend_storage:/app/storage
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - hr-ats-internal
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 45s
+    logging:
+      driver: "json-file"
+      options: { max-size: "10m", max-file: "3" }
+
+  # ===================================================================
+  #  Kong Gateway -- DB-less declarative mode.
+  #  The ONLY component that publishes an API port to the host.
+  #  The Admin API is bound to 127.0.0.1 INSIDE the container and is
+  #  deliberately NOT published. See docs/KONG_SECURITY.md.
+  # ===================================================================
+  kong:
+    image: kong:3.9
+    container_name: hr-ats-kong
+    restart: unless-stopped
+    user: kong
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /opt/kong/kong.yml
+      KONG_PROXY_LISTEN: "0.0.0.0:8000"
+      # Admin API listens on loopback inside the container only.
+      KONG_ADMIN_LISTEN: "127.0.0.1:8001"
+      KONG_ADMIN_GUI_LISTEN: "off"
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_LOG_LEVEL: notice
+      # Trust the Docker bridge so real client IPs survive, but no further.
+      KONG_TRUSTED_IPS: "0.0.0.0/0,::/0"
+      KONG_REAL_IP_HEADER: X-Real-IP
+      KONG_REAL_IP_RECURSIVE: "on"
+      KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: "16k"
+      KONG_NGINX_PROXY_PROXY_BUFFERS: "8 16k"
+      # Suppresses the Server/Via version headers Kong would otherwise
+      # add. A response-transformer cannot remove these: Kong appends
+      # them after plugins have run.
+      KONG_HEADERS: "off"
+      KONG_PLUGINS: "bundled"
+      KONG_VAULTS: "env"
+      # Injected into kong.yml via templating of env vars
+      KONG_GATEWAY_SHARED_SECRET: ${GATEWAY_SHARED_SECRET}
+    ports:
+      - "127.0.0.1:${KONG_PROXY_PORT:-8000}:8000"
+    volumes:
+      - ./kong/kong.yml:/opt/kong/kong.yml:ro
+    depends_on:
+      backend:
+        condition: service_started
+    networks:
+      - hr-ats-edge
+      - hr-ats-internal
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 15s
+      timeout: 10s
+      retries: 6
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options: { max-size: "10m", max-file: "3" }
+
+  # ===================================================================
+  #  React frontend (Vite dev server in development)
+  # ===================================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: ${FRONTEND_BUILD_TARGET:-development}
+    container_name: hr-ats-frontend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      # The browser talks to Kong. It never sees the backend directly.
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000/api}
+      VITE_APP_NAME: ${VITE_APP_NAME:-HR ATS}
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-5173}:5173"
+    volumes:
+      # Source is mounted so the Vite dev server actually hot-reloads.
+      # Without this the image carries a snapshot taken at build time and
+      # every code change would need a rebuild.
+      # node_modules is deliberately NOT mounted: the container's own
+      # install has the correct platform binaries for esbuild.
+      - ./frontend/src:/app/src:ro
+      - ./frontend/public:/app/public:ro
+      - ./frontend/index.html:/app/index.html:ro
+      - ./frontend/tailwind.config.js:/app/tailwind.config.js:ro
+      - ./frontend/vite.config.ts:/app/vite.config.ts:ro
+    depends_on:
+      kong:
+        condition: service_started
+    networks:
+      - hr-ats-edge
+    healthcheck:
+      # node, not wget: the slim Node image does not ship wget, and a
+      # health check that cannot execute reports the container unhealthy
+      # even while it is serving correctly.
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('http').get('http://127.0.0.1:5173/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options: { max-size: "10m", max-file: "3" }

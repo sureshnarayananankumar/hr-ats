@@ -1,0 +1,288 @@
+# =====================================================================
+#  Kong Gateway — declarative (DB-less) configuration
+#
+#  Flow:  Browser -> Kong :8000 -> backend:3000 -> mysql
+#
+#  Everything here is Kong OSS. No Enterprise-only plugin is used; see
+#  docs/KONG_SECURITY.md for the features that would require a licence.
+#
+#  IMPORTANT: Kong is a gateway, not an authorisation system. Every
+#  route below is ALSO authorised inside NestJS. The rate limits and
+#  header stripping here are defence in depth, not the only control.
+# =====================================================================
+_format_version: "3.0"
+_transform: true
+
+services:
+  # -------------------------------------------------------------------
+  #  The single upstream. The backend is not published to the host, so
+  #  this is the only way in.
+  # -------------------------------------------------------------------
+  - name: hr-ats-api
+    url: http://backend:3000
+    protocol: http
+    host: backend
+    port: 3000
+    # Fail fast rather than holding client connections open.
+    connect_timeout: 5000
+    write_timeout: 30000
+    read_timeout: 30000
+    retries: 2
+
+    routes:
+      # ---------------------------------------------------------------
+      #  1. Login — the brute-force surface. Tightest limit of all.
+      # ---------------------------------------------------------------
+      - name: auth-login
+        paths: ["/api/auth/login", "/api/auth/mfa/verify"]
+        strip_path: false
+        methods: [POST, OPTIONS]
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 5
+              hour: 50
+              policy: local
+              limit_by: ip
+              fault_tolerant: true
+              hide_client_headers: false
+          - name: request-size-limiting
+            config:
+              allowed_payload_size: 1 # MB — a login body is tiny
+              size_unit: megabytes
+
+      # ---------------------------------------------------------------
+      #  2. Registration and password reset — these send email to a
+      #     third party, so they are limited even harder than login.
+      # ---------------------------------------------------------------
+      - name: auth-register-reset
+        paths:
+          - "/api/auth/register"
+          - "/api/auth/forgot-password"
+          - "/api/auth/reset-password"
+          - "/api/auth/verify-email"
+        strip_path: false
+        methods: [POST, OPTIONS]
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 3
+              hour: 20
+              policy: local
+              limit_by: ip
+              fault_tolerant: true
+          - name: request-size-limiting
+            config:
+              allowed_payload_size: 1
+              size_unit: megabytes
+
+      # ---------------------------------------------------------------
+      #  3. Remaining auth routes (refresh, logout, me, sessions, MFA).
+      # ---------------------------------------------------------------
+      - name: auth-session
+        paths: ["/api/auth"]
+        strip_path: false
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 60
+              policy: local
+              limit_by: ip
+              fault_tolerant: true
+
+      # ---------------------------------------------------------------
+      #  4. Document upload / download.
+      #     The only route permitted a large body. NestJS independently
+      #     enforces MIME, magic-byte and size checks -- this limit only
+      #     stops an oversized body reaching the application at all.
+      # ---------------------------------------------------------------
+      - name: documents
+        paths: ["/api/documents"]
+        strip_path: false
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 30
+              hour: 300
+              policy: local
+              limit_by: ip
+              fault_tolerant: true
+          - name: request-size-limiting
+            config:
+              allowed_payload_size: 12 # MB — app limit is 10 MB
+              size_unit: megabytes
+
+      # ---------------------------------------------------------------
+      #  5. Administration. Restricted and closely rate-limited.
+      #     ip-restriction is available here but is NOT enabled by
+      #     default: in Docker the client IP is the bridge gateway, so a
+      #     naive allow-list would lock out every legitimate user.
+      #     See docs/KONG_SECURITY.md before enabling it.
+      # ---------------------------------------------------------------
+      - name: admin-api
+        paths: ["/api/admin"]
+        strip_path: false
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 60
+              policy: local
+              limit_by: ip
+              fault_tolerant: true
+          - name: request-size-limiting
+            config:
+              allowed_payload_size: 2
+              size_unit: megabytes
+
+      # ---------------------------------------------------------------
+      #  6. Public careers portal. Unauthenticated, so it gets a higher
+      #     ceiling but still a ceiling -- this is the scraping surface.
+      # ---------------------------------------------------------------
+      - name: public-careers
+        paths: ["/api/public"]
+        strip_path: false
+        methods: [GET, OPTIONS, HEAD]
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 120
+              hour: 2000
+              policy: local
+              limit_by: ip
+              fault_tolerant: true
+
+      # ---------------------------------------------------------------
+      #  7. Health. No rate limit: Docker and Kong poll it constantly.
+      # ---------------------------------------------------------------
+      - name: health
+        paths: ["/api/health"]
+        strip_path: false
+        methods: [GET]
+
+      # ---------------------------------------------------------------
+      #  8. Everything else: jobs, candidates, applications, interviews,
+      #     offers, onboarding, reports, notifications, dashboard.
+      #     Listed last so the specific routes above win on priority.
+      # ---------------------------------------------------------------
+      - name: api-general
+        paths: ["/api"]
+        strip_path: false
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 300
+              hour: 5000
+              policy: local
+              limit_by: ip
+              fault_tolerant: true
+          - name: request-size-limiting
+            config:
+              allowed_payload_size: 2
+              size_unit: megabytes
+
+# =====================================================================
+#  Global plugins — applied to every route above
+# =====================================================================
+plugins:
+  # -------------------------------------------------------------------
+  #  CORS.
+  #  Origins are listed explicitly. A wildcard is incompatible with
+  #  credentialed requests and would expose every authenticated
+  #  endpoint to any website. This list must stay in step with the
+  #  backend's CORS_ORIGINS.
+  # -------------------------------------------------------------------
+  - name: cors
+    config:
+      # MUST stay identical to CORS_ORIGINS in .env. Kong allowing an
+      # origin the API rejects produces a confusing failure: the request
+      # passes the gateway and is then refused by the backend.
+      # scripts/check-cors-consistency.mjs verifies the two match.
+      origins:
+        - http://localhost:5173
+        - http://127.0.0.1:5173
+        - http://localhost:8000
+        - http://127.0.0.1:8000
+        - http://localhost:8080
+      methods: [GET, POST, PATCH, PUT, DELETE, OPTIONS]
+      headers:
+        - Accept
+        - Content-Type
+        - Authorization
+        - X-CSRF-Token
+        - X-Request-Id
+      exposed_headers:
+        - X-Request-Id
+        - RateLimit-Remaining
+      credentials: true
+      max_age: 600
+      preflight_continue: false
+
+  # -------------------------------------------------------------------
+  #  Correlation ID.
+  #  Generated per request and forwarded upstream, where the NestJS
+  #  RequestIdMiddleware adopts it. This is what ties a gateway log line
+  #  to an application log line and an audit row.
+  # -------------------------------------------------------------------
+  - name: correlation-id
+    config:
+      header_name: X-Request-Id
+      generator: uuid#counter
+      echo_downstream: true
+
+  # -------------------------------------------------------------------
+  #  Identity-header stripping.
+  #
+  #  THE important one. A client must never be able to assert who it is
+  #  by sending a header. Kong blanks any inbound identity headers and
+  #  injects the gateway shared secret that the backend's GatewayGuard
+  #  checks in production. Identity itself comes only from the signed
+  #  session cookie that NestJS verifies.
+  # -------------------------------------------------------------------
+  - name: request-transformer
+    config:
+      remove:
+        headers:
+          - X-User-Id
+          - X-User-Email
+          - X-Role
+          - X-Roles
+          - X-Permissions
+          - X-Candidate-Id
+          - X-Gateway-Secret
+          - X-Forwarded-For
+          - X-Real-IP
+      add:
+        headers:
+          # Proves to the backend that the request came through Kong.
+          - "X-Gateway-Secret:${{ env \"KONG_GATEWAY_SHARED_SECRET\" }}"
+          - "X-Forwarded-Prefix:/api"
+
+  # -------------------------------------------------------------------
+  #  Response headers.
+  #  Browser-facing policy (CSP, HSTS) is set by the app and nginx,
+  #  which know their own content; these are the gateway-wide basics.
+  # -------------------------------------------------------------------
+  - name: response-transformer
+    config:
+      add:
+        headers:
+          - "X-Content-Type-Options:nosniff"
+          - "X-Frame-Options:DENY"
+          - "Referrer-Policy:strict-origin-when-cross-origin"
+      remove:
+        headers:
+          # Do not advertise the stack to attackers.
+          - Server
+          - X-Powered-By
+
+  # -------------------------------------------------------------------
+  #  Access logging.
+  #
+  #  Logs request id, route, status and latency. It deliberately does
+  #  NOT log request or response bodies, so passwords, session tokens
+  #  and resume contents never reach the log file.
+  # -------------------------------------------------------------------
+  - name: file-log
+    config:
+      path: /dev/stdout
+      reopen: false

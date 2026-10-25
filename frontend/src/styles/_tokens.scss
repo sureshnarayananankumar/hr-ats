@@ -1,0 +1,173 @@
+// =====================================================================
+//  Design tokens
+//
+//  Colour is declared once as CSS custom properties so Tailwind
+//  utilities and SCSS modules resolve to the same values, and dark mode
+//  is a single variable swap rather than a parallel set of classes.
+//
+//  HSL channels are stored unwrapped ("222 47% 11%") so they can be used
+//  with an alpha channel: hsl(var(--primary) / 0.1)
+// =====================================================================
+
+:root {
+  // ---- Surfaces ----
+  --background: 0 0% 100%;
+  --foreground: 222 47% 11%;
+  --card: 0 0% 100%;
+  --card-foreground: 222 47% 11%;
+
+  // ---- Brand ----
+  --primary: 221 83% 45%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 210 40% 96%;
+  --secondary-foreground: 222 47% 11%;
+
+  // ---- Neutrals ----
+  --muted: 210 40% 96%;
+  --muted-foreground: 215 16% 47%;
+  --accent: 210 40% 94%;
+  --accent-foreground: 222 47% 11%;
+
+  // ---- Semantic ----
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 0 0% 100%;
+  --success: 142 71% 36%;
+  --success-foreground: 0 0% 100%;
+  --warning: 38 92% 45%;
+  --warning-foreground: 0 0% 100%;
+  --info: 199 89% 42%;
+  --info-foreground: 0 0% 100%;
+
+  // ---- Lines & focus ----
+  --border: 214 32% 91%;
+  --input: 214 32% 91%;
+  --ring: 221 83% 45%;
+
+  --radius: 0.5rem;
+
+  // ---- Layout ----
+  --sidebar-width: 16rem;
+  --sidebar-width-collapsed: 4.5rem;
+  --topbar-height: 3.75rem;
+
+  // ---- Spacing scale ----
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-8: 3rem;
+
+  // ---- Elevation ----
+  --shadow-sm: 0 1px 2px 0 hsl(222 47% 11% / 0.05);
+  --shadow-md: 0 4px 12px -2px hsl(222 47% 11% / 0.08);
+  --shadow-lg: 0 12px 28px -6px hsl(222 47% 11% / 0.12);
+
+  // ---- Motion ----
+  --transition-fast: 120ms ease-out;
+  --transition-base: 180ms ease-out;
+
+  // ---- Z-index ladder (declared together to avoid guesswork) ----
+  --z-sidebar: 30;
+  --z-topbar: 40;
+  --z-dropdown: 50;
+  --z-modal: 60;
+  --z-toast: 70;
+}
+
+.dark {
+  --background: 222 47% 7%;
+  --foreground: 210 40% 96%;
+  --card: 222 45% 10%;
+  --card-foreground: 210 40% 96%;
+
+  --primary: 217 91% 60%;
+  --primary-foreground: 222 47% 7%;
+  --secondary: 217 33% 17%;
+  --secondary-foreground: 210 40% 96%;
+
+  --muted: 217 33% 15%;
+  --muted-foreground: 215 20% 65%;
+  --accent: 217 33% 20%;
+  --accent-foreground: 210 40% 96%;
+
+  --destructive: 0 63% 50%;
+  --destructive-foreground: 0 0% 100%;
+  --success: 142 64% 42%;
+  --warning: 38 92% 50%;
+  --info: 199 89% 50%;
+
+  --border: 217 33% 20%;
+  --input: 217 33% 20%;
+  --ring: 217 91% 60%;
+
+  --shadow-sm: 0 1px 2px 0 hsl(0 0% 0% / 0.3);
+  --shadow-md: 0 4px 12px -2px hsl(0 0% 0% / 0.4);
+  --shadow-lg: 0 12px 28px -6px hsl(0 0% 0% / 0.5);
+}
+
+// ---------------------------------------------------------------------
+//  Status colour map
+//  One definition shared by job statuses, application stages and offer
+//  statuses, so a badge means the same thing everywhere in the app.
+// ---------------------------------------------------------------------
+$status-colours: (
+  'draft': var(--muted-foreground),
+  'pending': var(--warning),
+  'approved': var(--info),
+  'published': var(--success),
+  'on-hold': var(--warning),
+  'closed': var(--muted-foreground),
+  'cancelled': var(--destructive),
+  'active': var(--info),
+  'rejected': var(--destructive),
+  'withdrawn': var(--muted-foreground),
+  'hired': var(--success),
+);
+
+// ---------------------------------------------------------------------
+//  Mixins
+// ---------------------------------------------------------------------
+
+/// Visible, consistent keyboard focus. Never remove an outline without
+/// supplying a replacement -- keyboard users rely on it.
+@mixin focus-ring {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+@mixin card-surface {
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+@mixin truncate($lines: 1) {
+  @if $lines == 1 {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  } @else {
+    display: -webkit-box;
+    -webkit-line-clamp: $lines;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+}
+
+// Breakpoints match Tailwind's so the two systems stay in step.
+$breakpoints: (sm: 640px, md: 768px, lg: 1024px, xl: 1280px);
+
+@mixin respond-below($key) {
+  @media (max-width: #{map-get($breakpoints, $key) - 1px}) {
+    @content;
+  }
+}
+
+@mixin respond-above($key) {
+  @media (min-width: map-get($breakpoints, $key)) {
+    @content;
+  }
+}

@@ -1,0 +1,321 @@
+@use '../../styles/tokens' as *;
+
+.shell {
+  display: flex;
+  min-height: 100vh;
+  background: hsl(var(--background));
+}
+
+// ---------------------------------------------------------------------
+//  Sidebar
+// ---------------------------------------------------------------------
+
+.sidebar {
+  position: fixed;
+  inset-block: 0;
+  inset-inline-start: 0;
+  z-index: var(--z-sidebar);
+  display: flex;
+  width: var(--sidebar-width);
+  flex-direction: column;
+  border-inline-end: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+
+  // Off-canvas by default; the drawer slides in on small screens.
+  transform: translateX(-100%);
+  transition: transform var(--transition-base);
+
+  @include respond-above(lg) {
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    transform: none;
+  }
+}
+
+.sidebarOpen {
+  transform: translateX(0);
+  box-shadow: var(--shadow-lg);
+}
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-sidebar) - 1);
+  background: hsl(0 0% 0% / 0.5);
+
+  @include respond-above(lg) {
+    display: none;
+  }
+}
+
+.brand {
+  display: flex;
+  height: var(--topbar-height);
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--space-2);
+  border-block-end: 1px solid hsl(var(--border));
+  padding-inline: var(--space-4);
+}
+
+// The supplied logo is a dark wordmark on transparent, so in dark mode
+// it would disappear against the sidebar. Inverting and lifting the
+// lightness keeps it legible without needing a second asset.
+.brandLogo {
+  flex-shrink: 0;
+  max-width: 100%;
+
+  :global(.dark) & {
+    filter: invert(1) brightness(1.8) contrast(0.9);
+  }
+}
+
+.closeButton {
+  margin-inline-start: auto;
+  display: grid;
+  place-items: center;
+  padding: var(--space-1);
+  border-radius: var(--radius);
+  color: hsl(var(--muted-foreground));
+
+  &:hover { background: hsl(var(--accent)); }
+  &:focus-visible { @include focus-ring; }
+
+  @include respond-above(lg) { display: none; }
+}
+
+.nav {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-3) var(--space-2);
+
+  ul {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+}
+
+.navLink {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  border-radius: var(--radius);
+  padding: 0.5rem var(--space-3);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground));
+  text-decoration: none;
+  transition: background var(--transition-fast), color var(--transition-fast);
+
+  &:hover {
+    background: hsl(var(--accent));
+    color: hsl(var(--accent-foreground));
+  }
+
+  &:focus-visible { @include focus-ring; }
+}
+
+.navLinkActive {
+  background: hsl(var(--primary) / 0.1);
+  color: hsl(var(--primary));
+  font-weight: 600;
+}
+
+.navLabel {
+  @include truncate;
+  flex: 1;
+}
+
+.navBadge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  padding-inline: 0.3rem;
+  border-radius: 999px;
+  background: hsl(var(--destructive));
+  color: hsl(var(--destructive-foreground));
+  font-size: 0.6875rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.sidebarFooter {
+  flex-shrink: 0;
+  border-block-start: 1px solid hsl(var(--border));
+  padding: var(--space-3) var(--space-4);
+}
+
+.version {
+  font-size: 0.6875rem;
+  color: hsl(var(--muted-foreground));
+}
+
+// ---------------------------------------------------------------------
+//  Main column
+// ---------------------------------------------------------------------
+
+.main {
+  display: flex;
+  min-width: 0; // lets wide tables scroll instead of stretching the page
+  flex: 1;
+  flex-direction: column;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-topbar);
+  display: flex;
+  height: var(--topbar-height);
+  align-items: center;
+  gap: var(--space-2);
+  border-block-end: 1px solid hsl(var(--border));
+  background: hsl(var(--card) / 0.85);
+  backdrop-filter: blur(8px);
+  padding-inline: var(--space-4);
+}
+
+.menuButton {
+  display: grid;
+  place-items: center;
+  padding: var(--space-2);
+  border-radius: var(--radius);
+  color: hsl(var(--foreground));
+
+  &:hover { background: hsl(var(--accent)); }
+  &:focus-visible { @include focus-ring; }
+
+  @include respond-above(lg) { display: none; }
+}
+
+.topbarSpacer { flex: 1; }
+
+.iconButton {
+  position: relative;
+  display: grid;
+  place-items: center;
+  padding: var(--space-2);
+  border-radius: var(--radius);
+  color: hsl(var(--muted-foreground));
+
+  &:hover {
+    background: hsl(var(--accent));
+    color: hsl(var(--accent-foreground));
+  }
+  &:focus-visible { @include focus-ring; }
+}
+
+.dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: hsl(var(--destructive));
+  border: 2px solid hsl(var(--card));
+}
+
+.userButton {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  border-radius: var(--radius);
+  padding: var(--space-1) var(--space-2);
+
+  &:hover { background: hsl(var(--accent)); }
+  &:focus-visible { @include focus-ring; }
+}
+
+.avatar {
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: hsl(var(--primary) / 0.12);
+  color: hsl(var(--primary));
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.userMeta {
+  display: none;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.2;
+
+  @include respond-above(sm) { display: flex; }
+}
+
+.userName {
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.userRole {
+  font-size: 0.6875rem;
+  text-transform: capitalize;
+  color: hsl(var(--muted-foreground));
+}
+
+.menu {
+  z-index: var(--z-dropdown);
+  min-width: 14rem;
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  background: hsl(var(--card));
+  box-shadow: var(--shadow-md);
+  padding: var(--space-1);
+}
+
+.menuLabel {
+  @include truncate;
+  padding: var(--space-2) var(--space-3);
+  font-size: 0.75rem;
+  color: hsl(var(--muted-foreground));
+}
+
+.menuSeparator {
+  height: 1px;
+  margin: var(--space-1) 0;
+  background: hsl(var(--border));
+}
+
+.menuItem {
+  display: flex;
+  width: 100%;
+  cursor: pointer;
+  align-items: center;
+  gap: var(--space-2);
+  border-radius: calc(var(--radius) - 2px);
+  padding: var(--space-2) var(--space-3);
+  font-size: 0.8125rem;
+  color: hsl(var(--foreground));
+  text-decoration: none;
+  outline: none;
+
+  &:hover,
+  &[data-highlighted] {
+    background: hsl(var(--accent));
+    color: hsl(var(--accent-foreground));
+  }
+}
+
+.content {
+  flex: 1;
+  padding: var(--space-5) var(--space-4);
+  outline: none;
+
+  @include respond-above(md) {
+    padding: var(--space-6);
+  }
+}

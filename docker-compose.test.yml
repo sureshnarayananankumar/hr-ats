@@ -1,0 +1,37 @@
+# =====================================================================
+#  TEST-ONLY Compose override
+#
+#  Raises the auth rate limits so `scripts/smoke-test.sh` can complete a
+#  full run without being throttled by its OWN logins. The suite signs in
+#  as five different users and deliberately submits bad passwords, which
+#  legitimately trips the 5-per-minute production limit.
+#
+#  This file is NEVER applied by default. Use it only for local testing:
+#
+#    docker compose -f docker-compose.yml -f docker-compose.test.yml up -d
+#    bash scripts/smoke-test.sh http://localhost:8000/api
+#
+#  Return to the secure configuration afterwards with:
+#
+#    docker compose up -d
+#
+#  The production limits live in docker-compose.yml and kong/kong.yml and
+#  are unchanged by this file.
+# =====================================================================
+
+services:
+  backend:
+    environment:
+      # Application-tier limits (see common/auth/throttle.config.ts).
+      # Secure defaults apply whenever these are not set.
+      AUTH_THROTTLE_LIMIT: "500"
+      REGISTER_THROTTLE_LIMIT: "500"
+      RESET_THROTTLE_LIMIT: "500"
+      MFA_THROTTLE_LIMIT: "500"
+      PUBLIC_THROTTLE_LIMIT: "1000"
+
+  kong:
+    volumes:
+      # Same routing and security policy as the production config, with
+      # only the rate-limit counters raised.
+      - ./kong/kong.test.yml:/opt/kong/kong.yml:ro
