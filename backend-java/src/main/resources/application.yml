@@ -1,0 +1,166 @@
+server:
+  port: ${PORT:8081}
+  servlet:
+    context-path: /
+  # Kong terminates the client connection; the real IP arrives in a
+  # forwarded header. Without this, every request would appear to come
+  # from the Docker bridge, poisoning rate limits and the audit trail.
+  forward-headers-strategy: native
+  error:
+    include-stacktrace: never
+    include-message: never
+
+spring:
+  application:
+    name: hr-ats
+
+  datasource:
+    url: ${DATABASE_URL:jdbc:mysql://mysql:3306/hr_ats_db?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&characterEncoding=utf8}
+    username: ${DATABASE_USER:hr_ats_app}
+    password: ${DATABASE_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 20000
+      idle-timeout: 300000
+      max-lifetime: 1200000
+      pool-name: hr-ats-pool
+
+  jpa:
+    database-platform: org.hibernate.dialect.MySQLDialect
+    # VALIDATE, never update. Prisma owns this schema; Hibernate must
+    # only confirm the mapping matches and refuse to start if it drifts.
+    hibernate:
+      ddl-auto: validate
+      naming:
+        # Spring Boot's default rewrites camelCase to snake_case, and it
+        # does so even to names given explicitly in @Column. Prisma
+        # created these columns as camelCase ("applicationId", not
+        # "application_id"), so the standard strategy — which uses the
+        # mapped name verbatim — is the only one that matches.
+        physical-strategy: org.hibernate.boot.model.naming.PhysicalNamingStrategyStandardImpl
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          batch_size: 50
+          time_zone: UTC
+        order_inserts: true
+        order_updates: true
+        format_sql: false
+        # N+1 queries are the usual JPA performance trap; batching
+        # lazy loads keeps list endpoints from degrading.
+        default_batch_fetch_size: 30
+    show-sql: false
+
+  mail:
+    host: ${SMTP_HOST:mailhog}
+    port: ${SMTP_PORT:1025}
+    username: ${SMTP_USER:}
+    password: ${SMTP_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          auth: ${SMTP_AUTH:false}
+          starttls:
+            enable: ${SMTP_SECURE:false}
+          connectiontimeout: 5000
+          timeout: 5000
+          writetimeout: 5000
+
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+      fail-on-empty-beans: false
+    deserialization:
+      fail-on-unknown-properties: false
+
+  servlet:
+    multipart:
+      max-file-size: ${MAX_UPLOAD_MB:10}MB
+      max-request-size: ${MAX_REQUEST_MB:12}MB
+
+  threads:
+    virtual:
+      enabled: true
+
+# ---------------------------------------------------------------------
+#  Application configuration
+# ---------------------------------------------------------------------
+hrats:
+  api-prefix: /api
+  frontend-url: ${FRONTEND_URL:http://localhost:5173}
+
+  jwt:
+    # No defaults for secrets on purpose: startup fails if they are
+    # missing, rather than silently running on a guessable key.
+    access-secret: ${JWT_ACCESS_SECRET}
+    refresh-secret: ${JWT_REFRESH_SECRET}
+    access-ttl-seconds: ${JWT_ACCESS_TTL:900}
+    refresh-ttl-seconds: ${JWT_REFRESH_TTL:604800}
+
+  cookies:
+    # Empty means a host-only cookie, which is the stricter default.
+    domain: ${COOKIE_DOMAIN:}
+    secure: ${COOKIE_SECURE:false}
+    same-site: ${COOKIE_SAMESITE:Lax}
+
+  security:
+    csrf-secret: ${CSRF_SECRET}
+    gateway-shared-secret: ${GATEWAY_SHARED_SECRET:}
+    cors-origins: ${CORS_ORIGINS:http://localhost:5173,http://127.0.0.1:5173,http://localhost:8000,http://127.0.0.1:8000,http://localhost:8080}
+    max-failed-logins: ${MAX_FAILED_LOGINS:5}
+    lockout-minutes: ${LOCKOUT_MINUTES:15}
+    mfa-required-roles: ${MFA_REQUIRED_ROLES:SUPER_ADMIN,HR_ADMIN}
+    # Secure defaults. Raised only for local test runs.
+    login-rate-limit: ${AUTH_THROTTLE_LIMIT:5}
+    register-rate-limit: ${REGISTER_THROTTLE_LIMIT:5}
+    reset-rate-limit: ${RESET_THROTTLE_LIMIT:3}
+    public-rate-limit: ${PUBLIC_THROTTLE_LIMIT:60}
+
+  storage:
+    root: ${STORAGE_ROOT:/app/storage}
+    max-upload-bytes: ${MAX_UPLOAD_BYTES:10485760}
+    allowed-mime-types: application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document
+
+  mail:
+    from: ${MAIL_FROM:HR ATS <no-reply@hr-ats.local>}
+
+# ---------------------------------------------------------------------
+#  OpenAPI
+# ---------------------------------------------------------------------
+springdoc:
+  api-docs:
+    path: /api/docs-json
+  swagger-ui:
+    path: /api/docs
+    operations-sorter: method
+    tags-sorter: alpha
+    persist-authorization: true
+  default-produces-media-type: application/json
+
+# ---------------------------------------------------------------------
+#  Actuator — health only, and deliberately not detailed
+# ---------------------------------------------------------------------
+management:
+  endpoints:
+    web:
+      base-path: /api/actuator
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+
+logging:
+  level:
+    root: INFO
+    com.businessgateways.hrats: ${LOG_LEVEL:INFO}
+    org.hibernate.SQL: WARN
+    org.springframework.security: WARN
+  pattern:
+    # The request id ties an API log line to Kong's gateway log and to
+    # the audit trail.
+    console: "%d{HH:mm:ss.SSS} %-5level [%X{requestId:-}] %logger{36} - %msg%n"

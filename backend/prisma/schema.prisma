@@ -1,0 +1,1159 @@
+// =====================================================================
+//  HR-ATS  --  Prisma schema (MySQL 8.4 LTS)
+//  Prisma migrations are the AUTHORITATIVE schema-change mechanism.
+//  database/schema.sql is generated documentation, never hand-edited.
+// =====================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+  // The migrate account cannot CREATE DATABASE, so Prisma is pointed at
+  // a pre-created shadow schema (see docker/mysql/init.sh).
+  // Only used by `prisma migrate dev`; never by the running API.
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
+}
+
+// =====================  ENUMS  =======================================
+
+enum RoleName {
+  SUPER_ADMIN
+  HR_ADMIN
+  RECRUITER
+  HIRING_MANAGER
+  INTERVIEWER
+  CANDIDATE
+}
+
+enum UserStatus {
+  PENDING_VERIFICATION
+  ACTIVE
+  SUSPENDED
+  DEACTIVATED
+}
+
+enum JobStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  PUBLISHED
+  ON_HOLD
+  CLOSED
+  CANCELLED
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum EmploymentType {
+  FULL_TIME
+  PART_TIME
+  CONTRACT
+  TEMPORARY
+  INTERNSHIP
+  FREELANCE
+}
+
+enum WorkMode {
+  ONSITE
+  REMOTE
+  HYBRID
+}
+
+enum ApprovalDecision {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+/// The 12 default recruitment stages (ordered progression).
+enum ApplicationStage {
+  APPLIED
+  RESUME_SCREENING
+  HR_SCREENING
+  SHORTLISTED
+  ASSESSMENT
+  TECHNICAL_INTERVIEW
+  HR_INTERVIEW
+  FINAL_INTERVIEW
+  SELECTED
+  OFFER_RELEASED
+  OFFER_ACCEPTED
+  HIRED
+}
+
+/// Terminal / lifecycle status, independent of stage.
+enum ApplicationStatus {
+  ACTIVE
+  ON_HOLD
+  REJECTED
+  WITHDRAWN
+  OFFER_DECLINED
+  HIRED
+}
+
+enum ScreeningResult {
+  NOT_SCREENED
+  PASS
+  FAIL
+  ON_HOLD
+}
+
+enum DocumentType {
+  RESUME
+  COVER_LETTER
+  CERTIFICATE
+  ID_PROOF
+  EDUCATION_PROOF
+  EXPERIENCE_LETTER
+  OFFER_DOCUMENT
+  OTHER
+}
+
+enum InterviewType {
+  PHONE
+  VIDEO
+  ONSITE
+  PANEL
+  ASSESSMENT
+  TECHNICAL
+  HR
+}
+
+enum InterviewStatus {
+  SCHEDULED
+  RESCHEDULED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum Recommendation {
+  STRONG_HIRE
+  HIRE
+  HOLD
+  NO_HIRE
+}
+
+enum OfferStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  SENT
+  ACCEPTED
+  DECLINED
+  EXPIRED
+  WITHDRAWN
+}
+
+enum OnboardingStatus {
+  OFFER_ACCEPTED
+  PREBOARDING
+  JOINED
+  DID_NOT_JOIN
+}
+
+enum TaskStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  BLOCKED
+  CANCELLED
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  BOTH
+}
+
+enum EmailStatus {
+  QUEUED
+  SENT
+  FAILED
+  BOUNCED
+}
+
+enum SkillProficiency {
+  BEGINNER
+  INTERMEDIATE
+  ADVANCED
+  EXPERT
+}
+
+// =====================  IDENTITY & ACCESS  ===========================
+
+model User {
+  id                 String     @id @default(uuid()) @db.Char(36)
+  email              String     @unique @db.VarChar(255)
+  passwordHash       String     @db.VarChar(255) // Argon2id
+  firstName          String     @db.VarChar(100)
+  lastName           String     @db.VarChar(100)
+  phone              String?    @db.VarChar(30)
+  status             UserStatus @default(PENDING_VERIFICATION)
+  emailVerifiedAt    DateTime?
+  // --- MFA (required for privileged roles) ---
+  mfaEnabled         Boolean    @default(false)
+  mfaSecret          String?    @db.VarChar(255) // encrypted at rest
+  mfaRecoveryCodes   String?    @db.Text // hashed, JSON array
+  // --- Brute-force / lockout ---
+  failedLoginCount   Int        @default(0)
+  lockedUntil        DateTime?
+  lastLoginAt        DateTime?
+  lastLoginIp        String?    @db.VarChar(45)
+  // --- Privacy / retention ---
+  consentGivenAt     DateTime?
+  dataRetentionUntil DateTime?
+  deactivatedAt      DateTime?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  userRoles              UserRole[]
+  refreshSessions        RefreshSession[]
+  emailTokens            EmailVerificationToken[]
+  passwordResets         PasswordResetToken[]
+  candidateProfile       CandidateProfile?
+  departmentsHeaded      Department[]               @relation("DepartmentHead")
+  jobsRequested          JobRequirement[]           @relation("JobRequestedBy")
+  jobsAsRecruiter        JobRequirement[]           @relation("JobRecruiter")
+  jobsAsHiringManager    JobRequirement[]           @relation("JobHiringManager")
+  jobsCreated            JobRequirement[]           @relation("JobCreatedBy")
+  jobApprovals           JobApproval[]
+  applicationsAssigned   JobApplication[]           @relation("ApplicationRecruiter")
+  statusChanges          ApplicationStatusHistory[]
+  applicationNotes       ApplicationNote[]
+  interviewsOrganised    Interview[]                @relation("InterviewOrganiser")
+  interviewPanels        InterviewPanelMember[]
+  interviewFeedback      InterviewFeedback[]
+  offersCreated          Offer[]                    @relation("OfferCreatedBy")
+  offerApprovals         OfferApproval[]
+  onboardingManaged      OnboardingRecord[]         @relation("OnboardingManager")
+  onboardingTasks        OnboardingTask[]           @relation("OnboardingTaskOwner")
+  notifications          Notification[]
+  auditLogs              AuditLog[]
+  candidateNotesAuthored CandidateNote[]
+  tagsAssigned           CandidateTagLink[]
+
+  @@index([status])
+  @@map("users")
+}
+
+model Role {
+  id          String   @id @default(uuid()) @db.Char(36)
+  name        RoleName @unique
+  label       String   @db.VarChar(100)
+  description String?  @db.VarChar(500)
+  isSystem    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  userRoles       UserRole[]
+  rolePermissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String   @id @default(uuid()) @db.Char(36)
+  /// Dot-notation key, e.g. "job.approve", "candidate.read.any"
+  key         String   @unique @db.VarChar(100)
+  resource    String   @db.VarChar(50)
+  action      String   @db.VarChar(50)
+  description String?  @db.VarChar(500)
+  createdAt   DateTime @default(now())
+
+  rolePermissions RolePermission[]
+
+  @@index([resource])
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String @db.Char(36)
+  permissionId String @db.Char(36)
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+  @@map("role_permissions")
+}
+
+model UserRole {
+  userId     String   @db.Char(36)
+  roleId     String   @db.Char(36)
+  assignedAt DateTime @default(now())
+  assignedBy String?  @db.Char(36)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@index([roleId])
+  @@map("user_roles")
+}
+
+/// Server-side session record. Enables rotation + revocation.
+model RefreshSession {
+  id            String    @id @default(uuid()) @db.Char(36)
+  userId        String    @db.Char(36)
+  /// SHA-256 of the refresh token. The raw token is never stored.
+  tokenHash     String    @unique @db.VarChar(255)
+  /// Chains rotated tokens so reuse of an old token can be detected.
+  previousId    String?   @db.Char(36)
+  userAgent     String?   @db.VarChar(400)
+  ipAddress     String?   @db.VarChar(45)
+  expiresAt     DateTime
+  revokedAt     DateTime?
+  revokedReason String?   @db.VarChar(200)
+  createdAt     DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("refresh_sessions")
+}
+
+model EmailVerificationToken {
+  id        String    @id @default(uuid()) @db.Char(36)
+  userId    String    @db.Char(36)
+  tokenHash String    @unique @db.VarChar(255)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("email_verification_tokens")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid()) @db.Char(36)
+  userId    String    @db.Char(36)
+  tokenHash String    @unique @db.VarChar(255)
+  expiresAt DateTime
+  usedAt    DateTime?
+  requestIp String?   @db.VarChar(45)
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+/// Rate-limit / brute-force audit trail. No passwords are ever stored.
+model LoginAttempt {
+  id         BigInt   @id @default(autoincrement())
+  email      String   @db.VarChar(255)
+  ipAddress  String   @db.VarChar(45)
+  successful Boolean
+  reason     String?  @db.VarChar(100)
+  userAgent  String?  @db.VarChar(400)
+  createdAt  DateTime @default(now())
+
+  @@index([email, createdAt])
+  @@index([ipAddress, createdAt])
+  @@map("login_attempts")
+}
+
+// =====================  ORGANISATION  ================================
+
+model Department {
+  id          String   @id @default(uuid()) @db.Char(36)
+  code        String   @unique @db.VarChar(20)
+  name        String   @unique @db.VarChar(150)
+  description String?  @db.VarChar(500)
+  headUserId  String?  @db.Char(36)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  head              User?              @relation("DepartmentHead", fields: [headUserId], references: [id], onDelete: SetNull)
+  jobRequirements   JobRequirement[]
+  onboardingRecords OnboardingRecord[]
+
+  @@index([isActive])
+  @@index([headUserId])
+  @@map("departments")
+}
+
+model Skill {
+  id        String   @id @default(uuid()) @db.Char(36)
+  name      String   @unique @db.VarChar(100)
+  category  String?  @db.VarChar(60)
+  createdAt DateTime @default(now())
+
+  jobSkills       JobSkill[]
+  candidateSkills CandidateSkill[]
+
+  @@index([category])
+  @@map("skills")
+}
+
+model RecruitmentSource {
+  id           String   @id @default(uuid()) @db.Char(36)
+  name         String   @unique @db.VarChar(100)
+  category     String?  @db.VarChar(60) // JOB_BOARD | REFERRAL | AGENCY | DIRECT | SOCIAL
+  costPerMonth Decimal? @db.Decimal(12, 2)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  applications JobApplication[]
+
+  @@map("recruitment_sources")
+}
+
+// =====================  JOB REQUIREMENTS  ============================
+
+model JobRequirement {
+  id               String  @id @default(uuid()) @db.Char(36)
+  /// Human-readable unique requirement ID, e.g. JR-2026-0001
+  requirementCode  String  @unique @db.VarChar(30)
+  title            String  @db.VarChar(200)
+  /// URL slug for the public careers portal. Unique per job.
+  slug             String  @unique @db.VarChar(250)
+  description      String  @db.Text
+  responsibilities String? @db.Text
+  qualifications   String? @db.Text
+  internalNotes    String? @db.Text
+
+  minExperience      Int            @default(0)
+  maxExperience      Int?
+  departmentId       String         @db.Char(36)
+  designation        String         @db.VarChar(150)
+  vacancies          Int            @default(1)
+  vacanciesFilled    Int            @default(0)
+  employmentType     EmploymentType @default(FULL_TIME)
+  workMode           WorkMode       @default(ONSITE)
+  location           String         @db.VarChar(200)
+  salaryMin          Decimal?       @db.Decimal(14, 2)
+  salaryMax          Decimal?       @db.Decimal(14, 2)
+  salaryCurrency     String         @default("USD") @db.VarChar(3)
+  /// Hide compensation from the public careers portal.
+  salaryConfidential Boolean        @default(true)
+  priority           Priority       @default(MEDIUM)
+
+  status          JobStatus @default(DRAFT)
+  requestedById   String    @db.Char(36)
+  requestDate     DateTime  @default(now())
+  recruiterId     String?   @db.Char(36)
+  hiringManagerId String?   @db.Char(36)
+  createdById     String    @db.Char(36)
+
+  publishedAt         DateTime?
+  applicationDeadline DateTime?
+  closedAt            DateTime?
+  onHoldReason        String?   @db.VarChar(500)
+  cancelReason        String?   @db.VarChar(500)
+  /// Set when this requirement was duplicated from another.
+  duplicatedFromId    String?   @db.Char(36)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  department    Department @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  requestedBy   User       @relation("JobRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+  recruiter     User?      @relation("JobRecruiter", fields: [recruiterId], references: [id], onDelete: SetNull)
+  hiringManager User?      @relation("JobHiringManager", fields: [hiringManagerId], references: [id], onDelete: SetNull)
+  createdBy     User       @relation("JobCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+
+  skills       JobSkill[]
+  approvals    JobApproval[]
+  history      JobRequirementHistory[]
+  applications JobApplication[]
+  interviews   Interview[]
+  offers       Offer[]
+
+  @@index([status])
+  @@index([departmentId])
+  @@index([recruiterId])
+  @@index([hiringManagerId])
+  @@index([requestedById])
+  @@index([createdById])
+  @@index([publishedAt])
+  @@index([status, publishedAt])
+  @@index([applicationDeadline])
+  @@map("job_requirements")
+}
+
+model JobSkill {
+  id         String  @id @default(uuid()) @db.Char(36)
+  jobId      String  @db.Char(36)
+  skillId    String  @db.Char(36)
+  isRequired Boolean @default(true) // false => preferred
+  minYears   Int?
+
+  job   JobRequirement @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  skill Skill          @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, skillId])
+  @@index([skillId])
+  @@map("job_skills")
+}
+
+model JobApproval {
+  id         String           @id @default(uuid()) @db.Char(36)
+  jobId      String           @db.Char(36)
+  approverId String           @db.Char(36)
+  sequence   Int              @default(1)
+  decision   ApprovalDecision @default(PENDING)
+  comments   String?          @db.Text
+  decidedAt  DateTime?
+  createdAt  DateTime         @default(now())
+
+  job      JobRequirement @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  approver User           @relation(fields: [approverId], references: [id], onDelete: Restrict)
+
+  @@unique([jobId, approverId, sequence])
+  @@index([approverId, decision])
+  @@map("job_approvals")
+}
+
+/// Complete field-level change history for job requirements.
+model JobRequirementHistory {
+  id          BigInt   @id @default(autoincrement())
+  jobId       String   @db.Char(36)
+  changedById String   @db.Char(36)
+  fieldName   String   @db.VarChar(80)
+  oldValue    String?  @db.Text
+  newValue    String?  @db.Text
+  reason      String?  @db.VarChar(500)
+  changedAt   DateTime @default(now())
+
+  job JobRequirement @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, changedAt])
+  @@map("job_requirement_history")
+}
+
+// =====================  CANDIDATES  ==================================
+
+model CandidateProfile {
+  id                 String    @id @default(uuid()) @db.Char(36)
+  /// Human-readable unique candidate ID, e.g. CAND-2026-000123
+  candidateCode      String    @unique @db.VarChar(30)
+  userId             String    @unique @db.Char(36)
+  fullName           String    @db.VarChar(200)
+  /// Normalised (lowercase, digits only) for duplicate detection.
+  normalisedEmail    String    @db.VarChar(255)
+  normalisedPhone    String?   @db.VarChar(30)
+  mobile             String?   @db.VarChar(30)
+  location           String?   @db.VarChar(200)
+  totalExperience    Decimal?  @db.Decimal(4, 1)
+  currentDesignation String?   @db.VarChar(150)
+  currentCompany     String?   @db.VarChar(200)
+  highestEducation   String?   @db.VarChar(200)
+  educationDetails   String?   @db.Text // JSON array
+  expectedSalary     Decimal?  @db.Decimal(14, 2)
+  currentSalary      Decimal?  @db.Decimal(14, 2)
+  salaryCurrency     String    @default("USD") @db.VarChar(3)
+  noticePeriodDays   Int?
+  linkedinUrl        String?   @db.VarChar(400)
+  portfolioUrl       String?   @db.VarChar(400)
+  preferredLocation  String?   @db.VarChar(200)
+
+  preferredWorkMode       WorkMode?
+  preferredEmploymentType EmploymentType?
+  willingToRelocate       Boolean         @default(false)
+  summary                 String?         @db.Text
+
+  /// GDPR-style consent + retention controls
+  consentToStoreData      Boolean   @default(false)
+  consentAt               DateTime?
+  dataDeletionRequestedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  skills       CandidateSkill[]
+  documents    CandidateDocument[]
+  applications JobApplication[]
+  tags         CandidateTagLink[]
+  notes        CandidateNote[]
+  interviews   Interview[]
+  offers       Offer[]
+  activities   CandidateActivity[]
+  onboarding   OnboardingRecord[]
+
+  @@index([normalisedEmail])
+  @@index([normalisedPhone])
+  @@index([fullName])
+  @@map("candidate_profiles")
+}
+
+model CandidateSkill {
+  id          String           @id @default(uuid()) @db.Char(36)
+  candidateId String           @db.Char(36)
+  skillId     String           @db.Char(36)
+  years       Decimal?         @db.Decimal(4, 1)
+  proficiency SkillProficiency @default(INTERMEDIATE)
+
+  candidate CandidateProfile @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  skill     Skill            @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@unique([candidateId, skillId])
+  @@index([skillId])
+  @@map("candidate_skills")
+}
+
+/// Private document metadata. Files live OUTSIDE the web root;
+/// only this row knows the opaque storage key.
+model CandidateDocument {
+  id           String       @id @default(uuid()) @db.Char(36)
+  candidateId  String       @db.Char(36)
+  documentType DocumentType @default(RESUME)
+  /// Original client file name, sanitised. Never used as a path.
+  originalName String       @db.VarChar(255)
+  /// Opaque server-generated key (uuid + ext). Never client-controlled.
+  storageKey   String       @unique @db.VarChar(255)
+  mimeType     String       @db.VarChar(150)
+  sizeBytes    Int
+  /// SHA-256 of the file contents; used for dedupe + integrity.
+  checksum     String       @db.VarChar(64)
+  version      Int          @default(1)
+  isCurrent    Boolean      @default(true)
+  /// Links superseded versions together.
+  supersedesId String?      @db.Char(36)
+  uploadedAt   DateTime     @default(now())
+  deletedAt    DateTime?
+
+  candidate    CandidateProfile    @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  applications JobApplication[]
+  accessLogs   DocumentAccessLog[]
+
+  @@index([candidateId, documentType, isCurrent])
+  @@map("candidate_documents")
+}
+
+/// Records every read of a private candidate document.
+model DocumentAccessLog {
+  id         BigInt   @id @default(autoincrement())
+  documentId String   @db.Char(36)
+  userId     String   @db.Char(36)
+  ipAddress  String?  @db.VarChar(45)
+  action     String   @db.VarChar(40) // DOWNLOAD | VIEW | DELETE
+  accessedAt DateTime @default(now())
+
+  document CandidateDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId, accessedAt])
+  @@index([userId])
+  @@map("document_access_logs")
+}
+
+model CandidateTag {
+  id        String   @id @default(uuid()) @db.Char(36)
+  name      String   @unique @db.VarChar(60)
+  colour    String   @default("#64748b") @db.VarChar(9)
+  createdAt DateTime @default(now())
+
+  links CandidateTagLink[]
+
+  @@map("candidate_tags")
+}
+
+model CandidateTagLink {
+  candidateId  String   @db.Char(36)
+  tagId        String   @db.Char(36)
+  assignedById String   @db.Char(36)
+  assignedAt   DateTime @default(now())
+
+  candidate  CandidateProfile @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  tag        CandidateTag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  assignedBy User             @relation(fields: [assignedById], references: [id], onDelete: Restrict)
+
+  @@id([candidateId, tagId])
+  @@index([tagId])
+  @@index([assignedById])
+  @@map("candidate_tag_links")
+}
+
+/// Internal recruiter notes. NEVER visible to the candidate.
+model CandidateNote {
+  id          String   @id @default(uuid()) @db.Char(36)
+  candidateId String   @db.Char(36)
+  authorId    String   @db.Char(36)
+  body        String   @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  candidate CandidateProfile @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  author    User             @relation(fields: [authorId], references: [id], onDelete: Restrict)
+
+  @@index([candidateId, createdAt])
+  @@index([authorId])
+  @@map("candidate_notes")
+}
+
+model CandidateActivity {
+  id          BigInt   @id @default(autoincrement())
+  candidateId String   @db.Char(36)
+  activity    String   @db.VarChar(120)
+  detail      String?  @db.Text
+  actorUserId String?  @db.Char(36)
+  createdAt   DateTime @default(now())
+
+  candidate CandidateProfile @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+
+  @@index([candidateId, createdAt])
+  @@map("candidate_activities")
+}
+
+// =====================  APPLICATIONS  ================================
+
+model JobApplication {
+  id              String @id @default(uuid()) @db.Char(36)
+  /// Human-readable unique application ID, e.g. APP-2026-000456
+  applicationCode String @unique @db.VarChar(30)
+  candidateId     String @db.Char(36)
+  jobId           String @db.Char(36)
+
+  /// ----- Duplicate-active-application guard -------------------------
+  /// Holds the jobId while the application is ACTIVE, and is set to NULL
+  /// once it reaches a terminal status. MySQL permits many NULLs in a
+  /// UNIQUE index, so a candidate may re-apply after rejection but can
+  /// never hold two live applications for the same job.
+  activeJobKey String? @db.Char(36)
+
+  appliedAt        DateTime @default(now())
+  resumeDocumentId String?  @db.Char(36)
+  coverLetter      String?  @db.Text
+  sourceId         String?  @db.Char(36)
+  recruiterId      String?  @db.Char(36)
+
+  currentStage     ApplicationStage  @default(APPLIED)
+  status           ApplicationStatus @default(ACTIVE)
+  screeningResult  ScreeningResult   @default(NOT_SCREENED)
+  screeningRemarks String?           @db.Text
+  rejectionReason  String?           @db.VarChar(500)
+  withdrawReason   String?           @db.VarChar(500)
+
+  /// Denormalised for fast pipeline/overdue queries. Maintained in the
+  /// same transaction as the stage change.
+  stageEnteredAt DateTime  @default(now())
+  followUpDueAt  DateTime?
+  lastUpdatedAt  DateTime  @updatedAt
+  createdAt      DateTime  @default(now())
+
+  candidate      CandidateProfile   @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  job            JobRequirement     @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  resumeDocument CandidateDocument? @relation(fields: [resumeDocumentId], references: [id], onDelete: SetNull)
+  source         RecruitmentSource? @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  recruiter      User?              @relation("ApplicationRecruiter", fields: [recruiterId], references: [id], onDelete: SetNull)
+
+  statusHistory ApplicationStatusHistory[]
+  notes         ApplicationNote[]
+  interviews    Interview[]
+  offers        Offer[]
+  onboarding    OnboardingRecord?
+
+  @@unique([candidateId, activeJobKey], name: "uniq_active_application")
+  @@index([jobId, currentStage])
+  @@index([jobId, status])
+  @@index([candidateId])
+  @@index([recruiterId, status])
+  @@index([appliedAt])
+  @@index([currentStage, stageEnteredAt])
+  @@index([followUpDueAt])
+  @@index([resumeDocumentId])
+  @@index([sourceId])
+  @@map("job_applications")
+}
+
+/// Immutable audit of every stage/status transition.
+model ApplicationStatusHistory {
+  id            BigInt             @id @default(autoincrement())
+  applicationId String             @db.Char(36)
+  fromStage     ApplicationStage?
+  toStage       ApplicationStage
+  fromStatus    ApplicationStatus?
+  toStatus      ApplicationStatus
+  changedById   String             @db.Char(36)
+  reason        String?            @db.VarChar(500)
+  /// Seconds spent in the previous stage. Powers stage-duration reports.
+  durationSeconds Int?
+  changedAt     DateTime           @default(now())
+
+  application JobApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  changedBy   User           @relation(fields: [changedById], references: [id], onDelete: Restrict)
+
+  @@index([applicationId, changedAt])
+  @@index([toStage, changedAt])
+  @@index([changedById])
+  @@map("application_status_history")
+}
+
+model ApplicationNote {
+  id            String   @id @default(uuid()) @db.Char(36)
+  applicationId String   @db.Char(36)
+  authorId      String   @db.Char(36)
+  body          String   @db.Text
+  /// Internal notes are never exposed on candidate-facing endpoints.
+  isInternal    Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  application JobApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  author      User           @relation(fields: [authorId], references: [id], onDelete: Restrict)
+
+  @@index([applicationId, createdAt])
+  @@index([authorId])
+  @@map("application_notes")
+}
+
+// =====================  INTERVIEWS  ==================================
+
+model Interview {
+  id            String @id @default(uuid()) @db.Char(36)
+  interviewCode String @unique @db.VarChar(30)
+  applicationId String @db.Char(36)
+  candidateId   String @db.Char(36)
+  jobId         String @db.Char(36)
+
+  round          Int           @default(1)
+  roundName      String        @db.VarChar(100)
+  interviewType  InterviewType @default(VIDEO)
+  scheduledStart DateTime
+  scheduledEnd   DateTime
+  timeZone       String        @default("UTC") @db.VarChar(60)
+  meetingLink    String?       @db.VarChar(500)
+  venue          String?       @db.VarChar(300)
+  instructions   String?       @db.Text
+
+  status            InterviewStatus @default(SCHEDULED)
+  cancelReason      String?         @db.VarChar(500)
+  rescheduledFromId String?         @db.Char(36)
+  organiserId       String          @db.Char(36)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  application JobApplication   @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  candidate   CandidateProfile @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  job         JobRequirement   @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  organiser   User             @relation("InterviewOrganiser", fields: [organiserId], references: [id], onDelete: Restrict)
+
+  panel    InterviewPanelMember[]
+  feedback InterviewFeedback[]
+
+  @@index([applicationId, round])
+  @@index([scheduledStart, status])
+  @@index([candidateId])
+  @@index([jobId])
+  @@index([organiserId])
+  @@map("interviews")
+}
+
+model InterviewPanelMember {
+  interviewId   String    @db.Char(36)
+  interviewerId String    @db.Char(36)
+  isLead        Boolean   @default(false)
+  invitedAt     DateTime  @default(now())
+  respondedAt   DateTime?
+  accepted      Boolean?
+
+  interview   Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+  interviewer User      @relation(fields: [interviewerId], references: [id], onDelete: Cascade)
+
+  @@id([interviewId, interviewerId])
+  @@index([interviewerId])
+  @@map("interview_panel_members")
+}
+
+/// Structured evaluation. Visible only to HR, hiring managers and the
+/// interviewers on that panel -- never to the candidate.
+model InterviewFeedback {
+  id            String @id @default(uuid()) @db.Char(36)
+  interviewId   String @db.Char(36)
+  interviewerId String @db.Char(36)
+
+  technicalSkills    Int? // 1-5
+  communication      Int?
+  problemSolving     Int?
+  relevantExperience Int?
+  roleSuitability    Int?
+  teamCollaboration  Int?
+  overallRating      Int // 1-5, required
+
+  strengths           String?        @db.Text
+  areasForImprovement String?        @db.Text
+  comments            String?        @db.Text
+  recommendation      Recommendation
+
+  submittedAt DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  interview   Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+  interviewer User      @relation(fields: [interviewerId], references: [id], onDelete: Restrict)
+
+  @@unique([interviewId, interviewerId])
+  @@index([interviewerId])
+  @@index([recommendation])
+  @@map("interview_feedback")
+}
+
+// =====================  OFFERS  ======================================
+
+model Offer {
+  id            String @id @default(uuid()) @db.Char(36)
+  offerCode     String @unique @db.VarChar(30)
+  applicationId String @db.Char(36)
+  candidateId   String @db.Char(36)
+  jobId         String @db.Char(36)
+
+  proposedDesignation String   @db.VarChar(150)
+  departmentName      String?  @db.VarChar(150)
+  annualSalary        Decimal  @db.Decimal(14, 2)
+  currency            String   @default("USD") @db.VarChar(3)
+  bonus               Decimal? @db.Decimal(14, 2)
+  benefits            String?  @db.Text
+  joiningDate         DateTime
+  issuedAt            DateTime?
+  expiresAt           DateTime?
+
+  status         OfferStatus @default(DRAFT)
+  declineReason  String?     @db.VarChar(500)
+  withdrawReason String?     @db.VarChar(500)
+  respondedAt    DateTime?
+  /// Opaque storage key for the signed offer document.
+  offerDocumentKey String?   @db.VarChar(255)
+  createdById    String      @db.Char(36)
+  revision       Int         @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  application JobApplication   @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  candidate   CandidateProfile @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  job         JobRequirement   @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  createdBy   User             @relation("OfferCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+
+  approvals  OfferApproval[]
+  history    OfferHistory[]
+  onboarding OnboardingRecord?
+
+  @@index([applicationId])
+  @@index([status])
+  @@index([candidateId])
+  @@index([jobId])
+  @@index([createdById])
+  @@map("offers")
+}
+
+model OfferApproval {
+  id         String           @id @default(uuid()) @db.Char(36)
+  offerId    String           @db.Char(36)
+  approverId String           @db.Char(36)
+  sequence   Int              @default(1)
+  decision   ApprovalDecision @default(PENDING)
+  comments   String?          @db.Text
+  decidedAt  DateTime?
+  createdAt  DateTime         @default(now())
+
+  offer    Offer @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  approver User  @relation(fields: [approverId], references: [id], onDelete: Restrict)
+
+  @@unique([offerId, approverId, sequence])
+  @@index([approverId, decision])
+  @@map("offer_approvals")
+}
+
+model OfferHistory {
+  id          BigInt       @id @default(autoincrement())
+  offerId     String       @db.Char(36)
+  fromStatus  OfferStatus?
+  toStatus    OfferStatus
+  changedById String       @db.Char(36)
+  reason      String?      @db.VarChar(500)
+  changedAt   DateTime     @default(now())
+
+  offer Offer @relation(fields: [offerId], references: [id], onDelete: Cascade)
+
+  @@index([offerId, changedAt])
+  @@map("offer_history")
+}
+
+// =====================  ONBOARDING  ==================================
+
+model OnboardingRecord {
+  id             String @id @default(uuid()) @db.Char(36)
+  onboardingCode String @unique @db.VarChar(30)
+  applicationId  String @unique @db.Char(36)
+  offerId        String @unique @db.Char(36)
+  candidateId    String @db.Char(36)
+
+  status             OnboardingStatus @default(OFFER_ACCEPTED)
+  joiningDate        DateTime
+  actualJoinDate     DateTime?
+  departmentId       String?          @db.Char(36)
+  designation        String           @db.VarChar(150)
+  reportingManagerId String?          @db.Char(36)
+  employeeCode       String?          @unique @db.VarChar(30)
+  didNotJoinReason   String?          @db.VarChar(500)
+
+  documentsVerified Boolean   @default(false)
+  verifiedAt        DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  application      JobApplication   @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  offer            Offer            @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  candidate        CandidateProfile @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  department       Department?      @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  reportingManager User?            @relation("OnboardingManager", fields: [reportingManagerId], references: [id], onDelete: SetNull)
+
+  tasks OnboardingTask[]
+
+  @@index([status])
+  @@index([joiningDate])
+  @@index([candidateId])
+  @@index([departmentId])
+  @@index([reportingManagerId])
+  @@map("onboarding_records")
+}
+
+model OnboardingTask {
+  id           String     @id @default(uuid()) @db.Char(36)
+  onboardingId String     @db.Char(36)
+  title        String     @db.VarChar(200)
+  description  String?    @db.Text
+  category     String?    @db.VarChar(60) // DOCUMENTATION | IT | HR | TRAINING
+  ownerUserId  String?    @db.Char(36)
+  dueDate      DateTime?
+  status       TaskStatus @default(PENDING)
+  completedAt  DateTime?
+  sequence     Int        @default(0)
+  isMandatory  Boolean    @default(true)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  onboarding OnboardingRecord @relation(fields: [onboardingId], references: [id], onDelete: Cascade)
+  owner      User?            @relation("OnboardingTaskOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
+
+  @@index([onboardingId, sequence])
+  @@index([ownerUserId, status])
+  @@index([dueDate])
+  @@map("onboarding_tasks")
+}
+
+// =====================  NOTIFICATIONS  ===============================
+
+model NotificationTemplate {
+  id       String              @id @default(uuid()) @db.Char(36)
+  /// Stable key referenced from code, e.g. "application.received"
+  key      String              @unique @db.VarChar(100)
+  name     String              @db.VarChar(150)
+  channel  NotificationChannel @default(BOTH)
+  subject  String              @db.VarChar(300)
+  bodyHtml String              @db.Text
+  bodyText String?             @db.Text
+  /// JSON array of the placeholder names this template accepts.
+  variables String?            @db.Text
+  isActive  Boolean            @default(true)
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  emailLogs     EmailLog[]
+  notifications Notification[]
+
+  @@map("notification_templates")
+}
+
+model Notification {
+  id         String              @id @default(uuid()) @db.Char(36)
+  userId     String              @db.Char(36)
+  templateId String?             @db.Char(36)
+  channel    NotificationChannel @default(IN_APP)
+  title      String              @db.VarChar(300)
+  body       String              @db.Text
+  /// Deep link into the SPA, e.g. /applications/<id>
+  link       String?             @db.VarChar(400)
+  category   String?             @db.VarChar(60)
+  readAt     DateTime?
+  createdAt  DateTime            @default(now())
+
+  user     User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  template NotificationTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+
+  @@index([userId, readAt])
+  @@index([createdAt])
+  @@index([templateId])
+  @@map("notifications")
+}
+
+model EmailLog {
+  id           String      @id @default(uuid()) @db.Char(36)
+  templateId   String?     @db.Char(36)
+  toEmail      String      @db.VarChar(255)
+  subject      String      @db.VarChar(300)
+  status       EmailStatus @default(QUEUED)
+  providerId   String?     @db.VarChar(255)
+  errorMessage String?     @db.Text
+  attempts     Int         @default(0)
+  queuedAt     DateTime    @default(now())
+  sentAt       DateTime?
+
+  template NotificationTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+
+  @@index([status, queuedAt])
+  @@index([toEmail])
+  @@index([templateId])
+  @@map("email_logs")
+}
+
+// =====================  PLATFORM  ====================================
+
+/// Append-only security + business audit trail.
+model AuditLog {
+  id          BigInt   @id @default(autoincrement())
+  actorUserId String?  @db.Char(36)
+  actorEmail  String?  @db.VarChar(255)
+  action      String   @db.VarChar(100) // e.g. JOB_APPROVED, LOGIN_FAILED
+  entityType  String?  @db.VarChar(60)
+  entityId    String?  @db.VarChar(64)
+  /// JSON diff. Sensitive fields are redacted before writing.
+  metadata    String?  @db.Text
+  ipAddress   String?  @db.VarChar(45)
+  userAgent   String?  @db.VarChar(400)
+  /// Correlates with the Kong gateway X-Request-Id header.
+  requestId   String?  @db.VarChar(64)
+  severity    String   @default("INFO") @db.VarChar(20)
+  createdAt   DateTime @default(now())
+
+  actor User? @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([actorUserId, createdAt])
+  @@index([action, createdAt])
+  @@index([entityType, entityId])
+  @@index([requestId])
+  @@map("audit_logs")
+}
+
+model SystemSetting {
+  id          String   @id @default(uuid()) @db.Char(36)
+  key         String   @unique @db.VarChar(100)
+  value       String   @db.Text
+  valueType   String   @default("string") @db.VarChar(20) // string|number|boolean|json
+  category    String   @default("general") @db.VarChar(60)
+  description String?  @db.VarChar(500)
+  /// Secret settings are never returned by the read API.
+  isSecret    Boolean  @default(false)
+  updatedById String?  @db.Char(36)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([category])
+  @@map("system_settings")
+}
