@@ -1,0 +1,53 @@
+# Dependencies
+node_modules/
+.pnp/
+.pnp.js
+
+# Env & secrets  -- NEVER commit real credentials
+.env
+.env.local
+.env.*.local
+*.env
+!.env.example
+secrets/
+*.pem
+*.key
+!kong/*.yml
+
+# Build output
+dist/
+build/
+.vite/
+*.tsbuildinfo
+
+# Uploads / private storage (candidate documents)
+storage/
+uploads/
+backend/storage/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Test output
+coverage/
+playwright-report/
+test-results/
+.nyc_output/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Prisma
+backend/prisma/*.db
+
+# Locally generated dev seed password (never commit)
+scripts/.dev-seed-password.txt
+
+# Stray error logs
+*.log.err
